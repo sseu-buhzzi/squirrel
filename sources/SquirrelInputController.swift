@@ -31,6 +31,8 @@ final class SquirrelInputController: IMKInputController {
   // swiftlint:disable:next cyclomatic_complexity
   override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
     guard let event = event else { return false }
+    // Key events on a client make it the one that should receive commits.
+    NSApp.squirrelAppDelegate.activeController = self
     let modifiers = event.modifierFlags
     let changes = lastModifiers.symmetricDifference(modifiers)
 
@@ -166,6 +168,10 @@ final class SquirrelInputController: IMKInputController {
 
   override func activateServer(_ sender: Any!) {
     self.client ?= sender as? IMKTextInput
+    NSApp.squirrelAppDelegate.activeController = self
+    if session == 0 || !rimeAPI.find_session(session) {
+      createSession()
+    }
     var keyboardLayout = NSApp.squirrelAppDelegate.config?.getString("keyboard_layout") ?? ""
     if keyboardLayout == "last" || keyboardLayout == "" {
       keyboardLayout = ""
@@ -221,6 +227,9 @@ final class SquirrelInputController: IMKInputController {
   override func deactivateServer(_ sender: Any!) {
     hidePalettes()
     commitComposition(sender)
+    if NSApp.squirrelAppDelegate.activeController === self {
+      NSApp.squirrelAppDelegate.activeController = nil
+    }
     client = nil
   }
 
@@ -364,9 +373,10 @@ private extension SquirrelInputController {
       SquirrelInputController.unknownAppCnt &+= 1
       return "UnknownApp\(SquirrelInputController.unknownAppCnt)"
     }()
-    print("createSession: \(app)")
+    print("attach session for: \(app)")
     currentApp = app
-    session = rimeAPI.create_session()
+    // Every controller borrows the same session; librime state is shared.
+    session = NSApp.squirrelAppDelegate.ensureSharedSession()
     schemaId = ""
 
     if session != 0 {
@@ -378,12 +388,15 @@ private extension SquirrelInputController {
     if currentApp == "" {
       return
     }
+    var options: [String: Bool] = [:]
     if let appOptions = NSApp.squirrelAppDelegate.config?.getAppOptions(currentApp) {
-      for (key, value) in appOptions {
-        print("set app option: \(key) = \(value)")
-        rimeAPI.set_option(session, key, value)
+      for (key, value) in appOptions where key != "ascii_mode" {
+        // ascii_mode is shared through the common session; a per-app override
+        // would flip it for every client at once.
+        options[key] = value
       }
     }
+    NSApp.squirrelAppDelegate.applyAppOptions(options, to: session)
     if let reportBundleID = NSApp.squirrelAppDelegate.config?.getBool("unsafe/report_bundleid"), reportBundleID {
       currentApp.withCString { name in
         rimeAPI.set_property(session, "client_app", name)
@@ -392,10 +405,9 @@ private extension SquirrelInputController {
   }
 
   func destroySession() {
-    if session != 0 {
-      _ = rimeAPI.destroy_session(session)
-      session = 0
-    }
+    // The session belongs to SquirrelApplicationDelegate and lives as long as
+    // the process; only release this controller's reference.
+    session = 0
     clearChord()
   }
 
@@ -435,6 +447,10 @@ private extension SquirrelInputController {
   }
 
   func rimeConsumeCommittedText() {
+    // With one shared session, only the focused client may take the commit;
+    // inserting into a background client would block on a client that is still
+    // waiting for this key event to return.
+    guard NSApp.squirrelAppDelegate.activeController === self else { return }
     var commitText = RimeCommit.rimeStructInit()
     if rimeAPI.get_commit(session, &commitText) {
       if let text = commitText.text {
@@ -622,8 +638,16 @@ private extension SquirrelInputController {
     guard let enableASCII = notification.object as? Bool else { return }
     guard session != 0 && rimeAPI.find_session(session) else { return }
 
-    rimeAPI.set_option(session, "ascii_mode", enableASCII)
-    rimeUpdate()
+    let delegate = NSApp.squirrelAppDelegate
+    if rimeAPI.get_option(session, "ascii_mode") != enableASCII {
+      rimeAPI.set_option(session, "ascii_mode", enableASCII)
+    }
+    delegate.updateStatusIcon(asciiMode: enableASCII, schemaLabel: nil)
+    // Only the focused client owns the panel; the other controllers share the
+    // same session and need no refresh (and must not touch their clients).
+    if delegate.activeController === self {
+      rimeUpdate()
+    }
   }
 
   private func reportASCIIMode(_: Notification) {

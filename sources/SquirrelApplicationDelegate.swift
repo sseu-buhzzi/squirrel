@@ -21,6 +21,18 @@ final class SquirrelApplicationDelegate: NSObject, NSApplicationDelegate, SPUSta
   var enableNotifications = false
   var showStatusIcon: Bool = true
   var statusItem: NSStatusItem?
+  /// One Rime session shared by every input controller.
+  ///
+  /// Each IMK client gets its own `SquirrelInputController`, but they all live
+  /// in this single process. Keeping one session makes ascii_mode, the current
+  /// schema and every other librime option inherently global instead of
+  /// duplicated per client.
+  private(set) var sharedSession: RimeSessionId = 0
+  /// The controller that currently owns keyboard focus. Only it may pull a
+  /// commit out of the shared session and insert it into its client.
+  weak var activeController: SquirrelInputController?
+  /// Keys of `app_options` currently applied to `sharedSession`.
+  private var appliedAppOptions: Set<String> = []
   let updateController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
   var supportsGentleScheduledUpdateReminders: Bool {
     true
@@ -403,6 +415,7 @@ private extension SquirrelApplicationDelegate {
 
   func shutdownRime() {
     config?.close()
+    resetSharedSession()
     rimeAPI.finalize()
   }
 
@@ -451,5 +464,45 @@ private extension SquirrelApplicationDelegate {
 extension NSApplication {
   var squirrelAppDelegate: SquirrelApplicationDelegate {
     self.delegate as! SquirrelApplicationDelegate
+  }
+}
+
+extension SquirrelApplicationDelegate {
+  /// Returns the process-wide session, creating it on first use (and again
+  /// after a deploy/reload invalidated it).
+  func ensureSharedSession() -> RimeSessionId {
+    if sharedSession == 0 || !rimeAPI.find_session(sharedSession) {
+      sharedSession = rimeAPI.create_session()
+      print("created shared rime session: \(sharedSession)")
+    }
+    return sharedSession
+  }
+
+  /// Drops the reference without destroying it: `rimeAPI.finalize()` releases
+  /// every session, so destroying here would double-free.
+  func resetSharedSession() {
+    sharedSession = 0
+    activeController = nil
+    appliedAppOptions.removeAll()
+  }
+
+  /// Applies `app_options` for the focused app onto the shared session.
+  ///
+  /// Per-client sessions used to isolate these options per app; with one shared
+  /// session, options left over from the previous app have to be cleared or
+  /// they would leak into the next one.
+  func applyAppOptions(_ options: [String: Bool], to session: RimeSessionId) {
+    for key in appliedAppOptions where options[key] == nil {
+      if rimeAPI.get_option(session, key) {
+        rimeAPI.set_option(session, key, false)
+      }
+    }
+    for (key, value) in options {
+      if rimeAPI.get_option(session, key) != value {
+        print("set app option: \(key) = \(value)")
+        rimeAPI.set_option(session, key, value)
+      }
+    }
+    appliedAppOptions = Set(options.keys)
   }
 }
