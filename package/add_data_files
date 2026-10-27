@@ -16,14 +16,7 @@ a_lib_file="librime-lua.dylib"
 
 # 函數：生成唯一且不重複的 24 位十六進制大寫 ID
 generate_uuid() {
-    while true; do
-        local uuid=$(openssl rand -hex 12 | tr '[:lower:]' '[:upper:]')
-        # 確保這個 ID 沒在 project.pbxproj 中出現過
-        if ! grep -q "$uuid" "${project_file}"; then
-            echo "$uuid"
-            return
-        fi
-    done
+    echo "$@" | sha256sum | cut -c1-24 | tr '[:lower:]' '[:upper:]'
 }
 
 obj_entry() {
@@ -74,15 +67,15 @@ add_line() {
     # 使用 s 命令替換：
     # \1 捕獲行首的縮進（空格/Tab），\2 捕獲錨點內容
     # 替換爲：保留原行內容 (\1\2) + 換行 + 相同的縮進 (\1) + 新行內容
-    sed -i '' "s/^\([[:space:]]*\)\(${escaped_anchor}\)$/\1\2\\
+    sed -i'' "s/^\([[:space:]]*\)\(${escaped_anchor}\)$/\1\2\\
 \1${escaped_new}/" "${project_file}"
 }
 
 add_file() {
     local file="$1"
     # 動態生成全新且唯一的 ID
-    local new_id=$(generate_uuid)
-    local new_refid=$(generate_uuid)
+    local new_id=$(generate_uuid add_file "$file" new_id)
+    local new_refid=$(generate_uuid add_file "$file" new_refid)
     local anchor_line
     local new_line
 
@@ -105,8 +98,8 @@ add_file() {
 
 add_lib() {
     local lib="$1"
-    local new_lib_id=$(generate_uuid)
-    local new_lib_refid=$(generate_uuid)
+    local new_lib_id=$(generate_uuid add_lib "$lib" new_lib_id)
+    local new_lib_refid=$(generate_uuid add_lib "$lib" new_lib_refid)
     local anchor_lib_line
     local new_lib_line
 
@@ -123,13 +116,15 @@ add_lib() {
     add_line "${anchor_lib_line}" "${new_lib_line}"
 }
 
-data_files=(
-    $(for file in data/plum/*; do basename "$file"; done)
-)
+data_files=()
+for f in data/plum/*; do
+    [[ -f $f ]] && data_files+=("${f##*/}")
+done
 
-lib_files=(
-    $(for file in lib/rime-plugins/*; do basename "$file"; done)
-)
+lib_files=()
+for f in lib/rime-plugins/*; do
+    [[ -f $f ]] && lib_files+=("${f##*/}")
+done
 
 for file in "${data_files[@]}"
 do

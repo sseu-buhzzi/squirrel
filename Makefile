@@ -47,6 +47,7 @@ librime: $(RIME_DEPS)
 
 copy-rime-binaries:
 	cp -L $(RIME_LIB_DIR)/$(RIME_LIBRARY_FILE_NAME) lib/
+	mkdir -p $(RIME_LIB_DIR)/rime-plugins
 	cp -pR $(RIME_LIB_DIR)/rime-plugins lib/
 	cp $(RIME_BIN_DIR)/rime_deployer bin/
 	cp $(RIME_BIN_DIR)/rime_dict_manager bin/
