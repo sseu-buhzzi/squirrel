@@ -123,13 +123,15 @@ add_lib() {
     add_line "${anchor_lib_line}" "${new_lib_line}"
 }
 
-data_files=(
-    $(for file in data/plum/*; do basename "$file"; done)
-)
+data_files=()
+for f in data/plum/*; do
+    [[ -f $f ]] && data_files+=("${f##*/}")
+done
 
-lib_files=(
-    $(for file in lib/rime-plugins/*; do basename "$file"; done)
-)
+lib_files=()
+for f in lib/rime-plugins/*; do
+    [[ -f $f ]] && lib_files+=("${f##*/}")
+done
 
 for file in "${data_files[@]}"
 do
